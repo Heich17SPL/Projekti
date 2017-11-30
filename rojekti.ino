@@ -1,24 +1,30 @@
+[code]
 #include <WiFi.h>
 #include <SoftwareSerial.h>
 #include "SPI.h"
 
-#define ARDUINO_RX 8//should connect to TX of the Serial MP3 Player module
-#define ARDUINO_TX 9//connect to RX of the module
-SoftwareSerial mySerial(ARDUINO_RX, ARDUINO_TX);//init the serial protocol, tell to myserial wich pins are TX and RX
+#define ARDUINO_RX 8  // Arduinon vastaanottopinni
+#define ARDUINO_TX 9  // Arduinon lähetyspinni
+SoftwareSerial mySerial(ARDUINO_RX, ARDUINO_TX);    // Kommunikaatioon käytettävät pinnit arduinon ja mp3-moduulin välillä
 
-////////////////////////////////////////////////////////////////////////////////////
-//all the commands needed in the datasheet(http://geekmatic.in.ua/pdf/Catalex_MP3_board.pdf)
-static byte Send_buf[8] = {0} ;//The MP3 player undestands orders in a 8 int string
-                                 //0X7E FF 06 command 00 00 00 EF;(if command =01 next song order) 
-#define NEXT_SONG 0X01  
-#define PREV_SONG 0X02  
-#define CMD_PLAY_W_INDEX 0X03 //Laulun numero
-#define VOLUME_UP_ONE 0X04 
-#define VOLUME_DOWN_ONE 0X05 
-#define CMD_SEL_DEV 0X09 //SELECT STORAGE DEVICE, DATA IS REQUIRED 
+static byte Send_buf[8] = {0} ;                     // Määritellään "sendCommand"-funtiolla lähtevän merkkijonon koko/pituus
+                                // KOMENTOJEN MÄÄRITTELYT 
+#define NEXT_SONG 0X01              // Seuraava kappale
+#define PREV_SONG 0X02              // Edellinen kappale
+#define CMD_PLAY_W_INDEX 0X03       // Soita ensimmäinen kappale, tarvitsee lisäparametrin(0x0001) toimiakseen 
+#define VOLUME_UP_ONE 0X04          // Volyymiä ylös 1 verran (Volyymin skaalaus 0-30)
+#define VOLUME_DOWN_ONE 0X05        // Volyymiä alas 1 verran
+#define CMD_SET_VOLUME 0X06         // Aseta volyymitaso, tarvii lisäparametrin (number of volume from 0 up to 30(0x1E))  
+#define CMD_PLAY_WITHVOLUME 0X22    // Toista kappale tietyllä volyymitasolla, tarvii lisäparametrit  0x0000  
+#define CMD_SEL_DEV 0X09            // Setup käsky 
 #define DEV_TF 0X02 //HELLO,IM THE DATA REQUIRED  
+#define CMD_RESET 0X0C//CHIP RESET 
 #define CMD_PLAY 0X0D //RESUME PLAYBACK 
 #define CMD_PAUSE 0X0E //PLAYBACK IS PAUSED 
+#define CMD_PLAY_WITHFOLDER 0X0F//DATA IS NEEDED, 0x7E 06 0F 00 01 02 EF;(play the song with the directory \01\002xxxxxx.mp3 
+#define STOP_PLAY 0X16 
+#define PLAY_FOLDER 0X17// data is needed 0x7E 06 17 00 01 XX EF;(play the 01 folder)(value xx we dont care) 
+#define SET_CYCLEPLAY 0X19//data is needed 00 start; 01 close 
 #define CMD_WAKE_UP 0X0B
 
 
@@ -26,27 +32,105 @@ static byte Send_buf[8] = {0} ;//The MP3 player undestands orders in a 8 int str
 const char* ssid = "OnePlus";
 const char* pass = "arduino0";
 
-WiFiServer server(80);
+WiFiServer server(80); // Langaton kommunikaatio määritellään verkkoportille 80 
  
-void setup()
+void setup() 
 {
+  Serial.begin(9600);
   moduuliSetup();
   langatonSetup();
 }
  
 void loop() 
 {
-kayttoliittyma(); 
+  kayttoLiittyma();
 }
 
+//Funktiot//
 
-
+void kayttoLiittyma()
+{
+  
+  WiFiClient client = server.available();       
+  if (!client) {                                 // Odottaa käyttäjää, ei jatka ellei kukaan avaa käyttöliittymää
+    return;
+  }
+ 
+  // Wait until the client sends some data
+  sendCommand(CMD_WAKE_UP, 0x0000);              // Kun käyttäjä on löytynyt, "sendCommand"-funktio lähettää herätyskäskyn 
+  Serial.println("new client");                  // Mp3-moduulille
+  while(!client.available()){
+    delay(1);
+  }
+ 
+  // Read the first line of the request
+  String request = client.readStringUntil('\r'); // Näppäimen luomat viittaukset muuttavat URL-koodia, jolla käyttöliittymä näkyy
+  Serial.println(request);                       // Vertaa viittauksen luomia muutoksia URL-koodissa alhaalla oleviin ehtoihin.
+  client.flush();                                // Yksinkertaisesti: Play-nappia painaessa sivun ip-osoitteen pääte muuttuu ja arduino
+                                                 // reagoi näihin muutoksii
+                                                 
+                                                 // Seuraavien ehtojen täyttyessä "sendCommand"-funkio lähettää 1 byten sarjakommunikaatiolla
+                                                 // MP3-moduulille, jonka perusteella moduuli käsittelee SD-kortilla olevia äänitiedostoja
+    if (request.indexOf("/MP=PLAY") != -1) {
+    Serial.println("Toista mp3");
+    sendCommand(CMD_PLAY_W_INDEX, 0x0001);
+    
+                                                 // PLAY-komento, jolla toistetaan äänitiedosto.
+    
+  }
+    if (request.indexOf("/MP=PAUSE") != -1){
+    Serial.println("Mp3 pysäytetty");
+    sendCommand(CMD_PAUSE, 0x0000);
+                                                 // PAUSE-komento jolla keskeytään audio lähetys AUX:lle
+    
+  }
+    if (request.indexOf("/MP=NEXT") != -1){
+    Serial.println("Seuraava kappale");
+    sendCommand(NEXT_SONG, 0x0000);
+                                                 // NEXT-komento, jolla voidaan navigoida musiikkitiedostosta toiseen  
+  }
+    if (request.indexOf("/MP=PREV") != -1){
+    Serial.println("Edellinen kappale");
+    sendCommand(PREV_SONG, 0x0000);
+                                                 // PREV-komento mp3-moduulille, eli edellinen kappale "Previous" 
+  }
+    if (request.indexOf("/MP=UP") != -1){
+    Serial.println("Volume Up");
+    sendCommand(VOLUME_UP_ONE, 0x0000);
+    
+                                                 // ÄÄnitasoa ylös 1 pykälän "Volume up" (0-30)
+  }
+    if (request.indexOf("/MP=DOWN") != -1){
+    Serial.println("Volume Down");
+    sendCommand(VOLUME_DOWN_ONE, 0x0000);        // Äänitasoa alas 1 pykälän "Volume Down"
+  }
+  //HTTP_request toiminto
+  client.println("HTTP/1.1 200 OK");
+  client.println("Content-Type: text/html");
+  client.println(""); //  do not forget this one
+  client.println("<!DOCTYPE HTML>");
+  client.println("<html>");
+  client.print("Musasoitin: ");
+  client.print("<style> body { background-color:#d0e4fe; text-align: center }</style>"); // Sivun tausta väri vaihdettu
+  
+      client.println("<br><br>"); //Rivivaihtoja..?
+      client.println("<button><a href=\"/MP=PLAY\">PLAY</a></button>"); //
+      client.println("<button><a href=\"/MP=PAUSE\">PAUSE</a></button><br>");
+      client.println("<button><a href=\"/MP=NEXT\">NEXT</a></button>"); //
+      client.println("<button><a href=\"/MP=PREV\">PREV</a></button><br>");
+      client.println("<button><a href=\"/MP=UP\"> + </a></button>"); //
+      client.println("<button><a href=\"/MP=DOWN\"> - </a></button>");
+  
+  client.println("</html>");
+ 
+  delay(1);
+  Serial.println("Client disconnected");
+  Serial.println("");
+}
 void langatonSetup()
 {
-  Serial.begin(9600);   
-  
   if (WiFi.status() == WL_NO_SHIELD) {
-    Serial.print("WiFi-korttia ei loydy");    // Langattoman verkon setup ei jatku, jos  
+    Serial.print("WiFi-korttia ei loydy, setup ei jatku");    // Langattoman verkon setup ei jatku, jos  
     // don't continue:
     while(true);
   }
@@ -68,7 +152,6 @@ void langatonSetup()
   IPAddress ip = WiFi.localIP();
   Serial.print("Käyttöliittymän osoite verkossa: ");
   Serial.print(ip);
-  
 }
 
 void moduuliSetup()
@@ -77,90 +160,6 @@ mySerial.begin(9600);                               // Avaa kommunikaation Ardui
 delay(500);
 sendCommand(CMD_SEL_DEV, DEV_TF);                   // Lähettää ensimmäisen byten moduulille, tässä se valitsee laitteen ja tunnistaa
 delay(200);                                         // Moduulin TF-slotin, jossa sijaitsee SD-kortti.
-}
-
-
-void kayttoliittyma()
-{
-  // Check if a client has connected
-  WiFiClient client = server.available();
-  if (!client) {
-    return;
-  }
- 
-  // Wait until the client sends some data
-  sendCommand(CMD_WAKE_UP, 0x0000);
-  Serial.println("new client");
-  while(!client.available()){
-    delay(1);
-  }
-
-
-
-
-  
-  // Read the first line of the request
-  String request = client.readStringUntil('\r'); // Näppäimen luomat viittaukset muuttavat URL-koodia, jolla soittimen käyttöliittymä näkyy
-  Serial.println(request);                       // Vertaa viittauksen luomia muutoksia URL-koodissa alhaalla oleviin ehtoihin.
-  client.flush();                                
-    
-                                                 // Seuraavien ehtojen täyttyessä "sendCommand"-funkio lähettää 1 byten sarjakommunikaatiolla
-                                                 // MP3-moduulille, jonka perusteella moduuli käsittelee SD-kortilla olevia äänitiedostoja
-    if (request.indexOf("/MP=PLAY") != -1) {
-    Serial.println("Toista mp3");
-    sendCommand(CMD_PLAY_W_INDEX, 0x0001);
-    
-                                          // PLAY-komento, jolla toistetaan äänitiedosto.
-    
-  }
-    if (request.indexOf("/MP=PAUSE") != -1){
-    Serial.println("Mp3 pysäytetty");
-    sendCommand(CMD_PAUSE, 0x0000);
-                                          // PAUSE-komento jolla keskeytään audio lähetys AUX:lle
-    
-  }
-    if (request.indexOf("/MP=NEXT") != -1){
-    Serial.println("Seuraava kappale");
-    sendCommand(NEXT_SONG, 0x0000);
-                                          // NEXT-komento, jolla voidaan navigoida musiikkitiedostosta toiseen  
-  }
-    if (request.indexOf("/MP=PREV") != -1){
-    Serial.println("Edellinen kappale");
-    sendCommand(PREV_SONG, 0x0000);
-                                          // PAUSE-komento mp3-moduulille 
-  }
-    if (request.indexOf("/MP=UP") != -1){
-    Serial.println("Volume Up");
-    sendCommand(VOLUME_UP_ONE, 0x0000);
-    
-                                          // ÄÄnitasoa ylös "Volume up"
-  }
-    if (request.indexOf("/MP=DOWN") != -1){
-    Serial.println("Volume Down");
-    sendCommand(VOLUME_DOWN_ONE, 0x0000); // Äänitasoa alas
-  }
-    //HTTP_request toiminto
-  client.println("HTTP/1.1 200 OK");
-  client.println("Content-Type: text/html");
-  client.println(""); //  do not forget this one
-  client.println("<!DOCTYPE HTML>");
-  client.println("<html>");
-  client.print("Musasoitin: ");
-  client.print("<style>button {text-decoration: none} body { background-color:#d0e4fe; text-align: center }</style>"); // Sivun tausta väri vaihdettu
-  
-      client.println("<br><br>"); //Rivivaihtoja..?
-      client.println("<button><a href=\"/MP=PLAY\">PLAY</a></button>"); //
-      client.println("<button><a href=\"/MP=PAUSE\">PAUSE</a></button><br>");
-      client.println("<button><a href=\"/MP=NEXT\">NEXT</a></button>"); //
-      client.println("<button><a href=\"/MP=PREV\">PREV</a></button><br>");
-      client.println("<button><a href=\"/MP=UP\"> + </a></button>"); //
-      client.println("<button><a href=\"/MP=DOWN\"> - </a></button>");
-  
-  client.println("</html>");
- 
-  delay(1);
-  Serial.println("Client disconnected");
-  Serial.println("");
 }
 
 void sendCommand(byte command, byte dat)       // Tämä funktio generoi moduulille lähtevän bittijonon.
@@ -174,7 +173,6 @@ void sendCommand(byte command, byte dat)       // Tämä funktio generoi moduuli
  Send_buf[5] = (byte)(dat >> 8);                  // datah
  Send_buf[6] = (byte)(dat);                       // datal
  Send_buf[7] = 0xEF;                                // ending byte
- 
  for(byte i=0; i<8; i++)                            //
  {
    mySerial.write(Send_buf[i]) ;                    // Lähettää funktion arvot mp3-moduulille
@@ -182,3 +180,4 @@ void sendCommand(byte command, byte dat)       // Tämä funktio generoi moduuli
  }
  Serial.println();
 }
+[/code]
